@@ -108,6 +108,7 @@ public class GamePanel extends JPanel {
 
     private final GameState state;
     private final SpriteCache sprites = new SpriteCache();
+    private final WordArtCache wordArt = new WordArtCache();
     private final HUDRenderer hud;
 
     private final Font wordFont;
@@ -268,7 +269,10 @@ public class GamePanel extends JPanel {
                            boolean isCandidate, boolean isLocked) {
 
         EnemyType type = enemy.getType();
-        BufferedImage sprite = sprites.sprite(type);
+        BufferedImage sprite = wordArt.forWord(enemy.getWord());
+        if (sprite == null) {
+            sprite = sprites.sprite(type);
+        }
 
         double depth = enemy.depthScale();
 
