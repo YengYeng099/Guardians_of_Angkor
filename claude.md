@@ -29,6 +29,24 @@ medium 6-7, long 8-10, epic 11+) and `bossPools` (novice 5-7, adept
 8-10, master 11-13, legend 14+), plus a curated `projectile` pool of
 2-3 letter words shared with power-up pickups.
 
+`tricky` is the one pool NOT graded by length. It holds words that are
+awkward to type regardless of size — repeated letters, uncommon
+digraphs, long finger travel (rhythm, sphinx, glyph, quartz, syzygy) —
+and deliberately overlaps the length pools. Later level bands opt into
+it. Do not "fix" it to fit a length band; length is not what it is for.
+
+VOCABULARY IS ANGKOR-FLAVOURED ON PURPOSE and there are tests asserting
+it. Temple and Khmer terms (apsara, prasat, devata, garuda, laterite,
+bayon, gopura, bodhisattva), jungle and ruin words, and a seam of rare
+evocative ones (petrichor, cenotaph, oubliette, palanquin). Clinical
+modern vocabulary — examination, observation, translation — was removed
+and is asserted absent. Singular/plural pairs are deduped: keep one.
+
+`bossParagraphs` holds the finale, per tier, as several three-to-five
+sentence paragraphs. One is drawn per run so a rerun is not the same
+fight. Lower case, letters and spaces only — the finale must not be the
+one place in the game that needs a shift key or a comma.
+
 `difficulties` is the tuning table, NOT more word lists: per tier, a
 list of level bands saying which pools that stretch of the run may draw
 from and which boss rank its bosses use. Bands match by `throughLevel`
@@ -91,16 +109,33 @@ Time Freeze looks like a hang rather than like enemies stopping.
 Enemy's attack timers are DOUBLE, not int, or a 0.45 scale rounds to
 0 or 1 and a slowed Yeak throws at full speed.
 
-Drop rate rises as lives run out (PowerUpDrops), capped. That mercy
+Drop rate is LOW (12-30% per ELIGIBLE kill, ceiling 30%). The first pass
+dropped a boon from a third of Easy's kills, which made them ordinary —
+a reward the player stops noticing has stopped being one. It rises as
+lives run out (PowerUpDrops), capped. That mercy
 curve is the difficulty valve that needs no curve retuning: a run going
 badly quietly gets more to reach for, a run going well never notices.
 Mend is withheld at full health and the ward at full charges rather
 than rolled and wasted — a drop that does nothing teaches the player to
 ignore drops.
 
+Only Yeak, Pret and Naga drop (EnemyType.dropsBoons). Flyers and the
+common Beisach never do, so a boon is payment for a slow, long-word kill
+rather than loot from the trash mob. Rates are per ELIGIBLE kill and
+about a third of spawns qualify — Easy's 0.30 is nearer one boon in ten
+kills overall.
+
 Breaches and landed bolts both route through
 GameState.absorbOrLoseLife, so a shield can never be honoured for one
 and forgotten for the other.
+
+## Damage
+Lives are counted in HALVES (GameState.halfLives), not as a fraction —
+an integer count means a flyer's half-hit and a walker's full hit can
+never disagree by a rounding error about whether the run is over.
+Grounded breach costs 2, flying breach 1, any landed projectile 1. The
+HUD keeps three lotus buds and clips the gold to the left half of one
+to show a half; six small pips would be exact but would need counting.
 
 ## Enemy roster (see bestiary for word-length tiers)
 Beisach, Yeak, Ahp, Pret, Stec Kantoab, Naga, Krong Reap
@@ -128,9 +163,45 @@ GameConfig and are referenced by both engine and renderer. Do not
 redeclare them locally — if the cull timer and the fade timer disagree,
 sprites pop out mid-fade or linger invisible.
 
+## Tick rate is a promise, not a hope
+Every speed, duration and cooldown in the game is expressed in TICKS and
+assumes exactly TARGET_FPS of them per second. GameLoop is what makes
+that true: it accumulates REAL nanoseconds and runs however many whole
+ticks have come due — none on a fast machine, several on a slow one.
+
+This is not premature engineering. The loop used to run exactly one tick
+per Swing timer callback, and the result was that the entire game played
+in smooth uniform SLOW MOTION on Windows while being correct on macOS.
+Windows rounds Swing timer requests to its ~15.6ms scheduler
+granularity, so a 16ms request can land on 31ms — half rate, half speed.
+A slow machine must lose FRAMES, never simulation speed.
+
+Catch-up is capped (MAX_CATCHUP_TICKS 5). Uncapped it is the spiral of
+death — an overrunning frame asks for more ticks, which makes the next
+frame overrun further. The cap doubles as the laptop-lid guard: after a
+sleep or a breakpoint the clock has jumped by seconds and the game must
+not fast-forward through them.
+
+Never reintroduce per-callback stepping, and do not add
+`System.nanoTime()` reads inside entity update methods either — the
+fixed timestep is what keeps the simulation deterministic and the tests
+meaningful.
+
 ## Play field layout
 Enemies materialise in a smoke puff and converge on TEMPLE_CENTER_X /
-GROUND_LINE_Y. Reaching BREACH_RADIUS of that point costs a life. Spawns
+GROUND_LINE_Y. Reaching BREACH_RADIUS of that point costs a life.
+BREACH_RADIUS is 58 and was 105 — at 105 the box was wider than Preah
+Ream is drawn, so lives were lost while the monster was visibly still a
+stride away and it felt stolen. It can be lowered freely but NOT raised
+without re-checking DEPTH_FULL_SIZE_AT: the breach has to happen after
+enemies reach full size or they are culled mid-growth.
+
+The boss does NOT stand on GROUND_LINE_Y. BOSS_BASE_Y is 110px above it
+so the serpent rears up behind the temple rather than sharing the plaza
+with the hero — at ground level Preah Ream stood squarely in front of
+it. VERSE_PANEL_BOTTOM_Y is derived from the hero's height for the same
+reason: he is drawn in the foreground, and a panel reaching any lower
+put him in the middle of the sentence. Spawns
 are deliberately ON-SCREEN — the poof is what makes that read as
 materialising rather than popping in. Preah Ream stands at
 TEMPLE_CENTER_X in the foreground, back to the viewer.
@@ -199,6 +270,25 @@ delivered art has wildly uneven transparent padding (Yeak ~25% per side,
 Krong Reap under 4%), so untrimmed scaling both mis-sizes monsters and
 floats grounded ones above the plaza. EnemyType specifies targetHeight
 only; width is derived from the trimmed aspect ratio.
+
+Every loaded image is then converted ONCE to a display-compatible copy
+at working size (toWorkingCopy / toBackdrop). Both halves matter and
+both cost frame time on Windows but not macOS:
+
+- trim() ends in getSubimage, which returns a VIEW onto the parent
+  raster. Java2D refuses to treat a view as a managed image, so it can
+  never live in video memory and every blit of it is a software loop.
+  The copy is what makes it cacheable. Do not hand a raw getSubimage
+  result to the renderer.
+- ImageIO decodes to whatever the PNG declares, usually TYPE_4BYTE_ABGR
+  or TYPE_CUSTOM. Neither matches the screen, so each draw pays a
+  per-pixel conversion. TYPE_INT_ARGB_PRE is what the pipeline wants.
+
+Sources are up to 1216x1200 and monsters are drawn around 200px, so they
+are also downscaled on load to the tallest size they are ever drawn at
+(never upscaled). The 1672x941 backdrops are pre-scaled to the exact
+1280x720 window and kept OPAQUE — nothing sits behind them, so the alpha
+blend is pure waste. Backdrops then blit 1:1, which is the fast path.
 
 ## Failure containment
 Anything Swing calls repeatedly is wrapped in util/CrashGuard. This is
@@ -289,6 +379,15 @@ loaded with Font.createFont and registerFont or Khmer draws as tofu.
 Several alternative filenames are accepted so nobody has to rename a
 download.
 
+## Menu wordmark font
+FontManager.displayFont walks a SEPARATE chain for the "ANGKOR" title:
+Cinzel Decorative (bundled), Cinzel (bundled), either already installed
+on the machine, then the plain bold serif the title always used. Same
+optional-asset treatment as Khmer, for the same reason — not committed,
+not required, logged once if missing (resources/fonts/README.md). Unlike
+Khmer this is a styling choice rather than a glyph-coverage one, so the
+uncovered fallback is not tofu, just a plainer title.
+
 ## Input field
 TypingInputField is custom-painted (setOpaque(false), paintComponent
 draws the stone frame and glass plate, then calls super for the text). It
@@ -377,14 +476,96 @@ getFinalLevel() and getFinalBossLevel() are the same number today and
 are separate methods anyway, because they answer different questions:
 when the boss arrives, and when the game stops.
 
-## Winning
-Clearing the final level ends the run as a VICTORY. GameState.victory
-is tracked separately from gameOver rather than inferred from "finished
-with lives left" — they are different events with different screens,
-and the inference breaks the moment anything else can end a run.
-HUDRenderer checks isVictory() FIRST; congratulating a player in the
-defeat colour is the one mistake on that screen nobody would forgive.
-WaveManager.isRunComplete() stops it rolling into level 16.
+## The finale
+Clearing level 15's wave does NOT win the run — it summons the boss.
+BossFight is a phase, not an Enemy: it stands at TEMPLE_CENTER_X, never
+moves, cannot be reached, and is beaten by typing a paragraph. Forcing
+that into Enemy would mean an enemy ignoring its own movement, hitbox
+and word, which is not an enemy any more.
+
+The paragraph arrives ONE SENTENCE AT A TIME. Thirty words at once
+reads as a punishment; a verse at a time has a rhythm and each cleared
+one is a visible beat. A mistype RESETS THE CURRENT VERSE only —
+harsher than the rest of the game on purpose, since the finale is where
+accuracy is meant to matter, but never touching a verse already
+cleared.
+
+A verse is typed ONE WORD AT A TIME, buffer clearing between words like
+it does after a kill. That is load-bearing, not cosmetic: venom bolts
+carry words too, and a verse typed as one continuous string leaves no
+moment mid-verse at which a bolt's word could be started. Word-at-a-time
+keeps the buffer a partial word always, so both can be weighed against
+the same keystrokes.
+
+A word only advances on an explicit SPACE, not the instant its last
+letter lands (BossFight.submit checks for `word + " "` before it checks
+completion). Auto-advancing on the last letter was tried first and it
+broke the player's own typing rhythm: prose is typed word-then-space, and
+a field that clears itself out from under the space the player was
+already about to type leaves that keystroke landing on an empty buffer
+instead, reading as a stray first letter rather than a confirmation.
+GameState.handleBossInput mirrors this: the verse only counts as
+COMPLETED on `currentWord() + " "`, never on the bare word, so a fully
+typed but unconfirmed word still shows as PROGRESS (want.startsWith(want)
+is trivially true) rather than jumping ahead on its own.
+
+Venom (Projectile.Kind.VENOM, purple) is deflected by typing its word.
+It flies SLOWLY (5.5s, scaled by the tier) and comes every 5-10 seconds
+at random — a fixed cadence becomes a rhythm players stop reacting to.
+Its words come from the medium pool and are excluded against
+BossFight.remainingWords(), so no live bolt can ever share a word with
+the verse. Finishing a verse still fires a counter-volley clearing the
+sky, which is what makes the paragraph a defence and not just a score.
+A venom word never contains a space, so the confirm-with-space check
+above can never collide with a bolt.
+
+BRIEFING is a PHASE, not a banner over a live fight. Between ARRIVING
+and FIGHTING the boss stands risen and the game is held for
+BRIEFING_TICKS (5s) while BossRenderer.drawBriefing puts the rules on
+screen. It has to be a phase because the overlay covers the verse
+panel: leaving the fight running underneath would ask the player to
+type a sentence they cannot see and spit at them for the privilege.
+Nothing is typeable (isActive() and isFighting() are both false, so the
+existing "boss is not fighting" gate in handleInput covers it) and no
+venom flies. Its phaseTicks are NOT scaled by timeScale — a Time Freeze
+carried through the boss door must not stretch it, and freezing an
+already-held screen reads as a hang.
+
+GameState does not advance elapsedTicks while isBriefing(), for the
+same reason IntroSequence does not: five seconds of a screen that
+forbids typing must not be charged against the player's WPM.
+
+It exists because the finale changes three rules at once — words
+confirm on space, orbs are answered by typing them, a slip costs the
+verse — and none are guessable. The arrival name card announces the
+boss's name, which is the one thing already visible. Without this the
+first mistake is the tutorial.
+
+The overlay text says the verse resets, NOT the paragraph, because that
+is what resetVerse() does and the banner has to be true.
+
+GameState.handleBossInput does NOT use TargetResolver — it checks exact
+matches first (bolts, then the verse word followed by a space), then
+prefixes. Checking completions before prefixes is what stops a verse
+word that is a strict prefix of a live bolt's word ("the" while "temple"
+is in the air) from being impossible to finish. Same rule the matcher
+already applies within a tier; it just has to be applied across two
+lists here.
+
+Because the resolver is bypassed, its buffer goes stale for the fight —
+GameState.getTypedBuffer() is what the renderer must read, not
+resolver.getValidBuffer().
+
+Power-ups: arriving CLEARS every drop on the ground and suppresses new
+ones for the fight. Boons already running are left alone — those were
+earned, and cancelling them at the door would feel like a cheat.
+
+GameState.victory is tracked separately from gameOver rather than
+inferred from "finished with lives left" — different events, different
+screens, and the inference breaks the moment anything else can end a
+run. HUDRenderer checks isVictory() FIRST. Victory waits for the death
+animation; cutting it off to show a scoreboard throws away the moment
+the whole run was for.
 
 ## Level hints
 LevelPreview derives everything — the finale from Difficulty, arrivals

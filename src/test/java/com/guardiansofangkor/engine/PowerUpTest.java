@@ -31,6 +31,12 @@ class PowerUpTest {
                 400, 1, 0.5);
     }
 
+    /** A type that is allowed to leave a boon behind. */
+    private static Enemy heavy(String word) {
+        return new Enemy(EnemyType.PRET, ApproachPath.GROUND_DIAGONAL, word,
+                400, 1, 0.5);
+    }
+
     /** A walker dropped exactly on the breach point, to test what happens there. */
     private static Enemy atTheGate(String word) {
         return new Enemy(EnemyType.BEISACH, ApproachPath.GROUND_FLANK, word,
@@ -328,6 +334,48 @@ class PowerUpTest {
     }
 
     @Test
+    @DisplayName("only the grounded heavies and the mini-boss leave boons")
+    void onlyHeaviesDrop() {
+        // A boon should be payment for a slow, long-word, genuinely hard kill —
+        // not loot that falls out of the trash mob or off a passing swarm.
+        assertTrue(EnemyType.YEAK.dropsBoons());
+        assertTrue(EnemyType.PRET.dropsBoons());
+        assertTrue(EnemyType.NAGA.dropsBoons());
+
+        assertFalse(EnemyType.BEISACH.dropsBoons(), "the common walker is not a reward");
+        assertFalse(EnemyType.AHP.dropsBoons(), "flyers never drop");
+        assertFalse(EnemyType.STEC_KANTOAB.dropsBoons(), "flyers never drop");
+    }
+
+    @Test
+    @DisplayName("an ineligible type never drops, however lucky the roll")
+    void ineligibleTypesNeverDrop() {
+        Random random = new Random(2);
+
+        for (EnemyType type : EnemyType.values()) {
+            if (type.dropsBoons()) {
+                continue;
+            }
+            for (int i = 0; i < 500; i++) {
+                assertFalse(PowerUpDrops.shouldDrop(type, Difficulty.EASY, 9, 1, random),
+                        type + " dropped a boon");
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("an eligible type does drop, given enough kills")
+    void eligibleTypesDoDrop() {
+        Random random = new Random(2);
+
+        boolean dropped = false;
+        for (int i = 0; i < 500 && !dropped; i++) {
+            dropped = PowerUpDrops.shouldDrop(EnemyType.PRET, Difficulty.EASY, 9, 1, random);
+        }
+        assertTrue(dropped, "a Pret should leave something behind eventually");
+    }
+
+    @Test
     @DisplayName("drops get more generous as lives run out")
     void mercyRises() {
         double healthy = PowerUpDrops.chanceFor(Difficulty.EASY, 5, GameConfig.STARTING_LIVES);
@@ -343,7 +391,7 @@ class PowerUpTest {
         for (Difficulty tier : Difficulty.values()) {
             for (int lives = 0; lives <= GameConfig.STARTING_LIVES; lives++) {
                 double chance = PowerUpDrops.chanceFor(tier, 40, lives);
-                assertTrue(chance <= 0.55 + 0.0001,
+                assertTrue(chance <= 0.30 + 0.0001,
                         tier + " at " + lives + " lives rolled " + chance);
             }
         }

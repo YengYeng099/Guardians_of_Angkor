@@ -123,6 +123,7 @@ public class GamePanel extends JPanel {
     private final GameState state;
     private final SpriteCache sprites = new SpriteCache();
     private final HUDRenderer hud;
+    private final BossRenderer bossRenderer;
 
     private final Font wordFont;
     private final Font boltFont;
@@ -155,6 +156,7 @@ public class GamePanel extends JPanel {
         this.state = state;
         Language language = state.getLanguage();
         this.hud = new HUDRenderer(language);
+        this.bossRenderer = new BossRenderer(language);
         this.wordFont = FontManager.wordFont(language, 20, Font.BOLD);
         this.boltFont = FontManager.wordFont(language, 17, Font.BOLD);
         this.lockFont = FontManager.wordFont(language, 26, Font.BOLD);
@@ -236,7 +238,7 @@ public class GamePanel extends JPanel {
 
             drawBackdrop(g2);
 
-            String typed = state.getResolver().getValidBuffer();
+            String typed = state.getTypedBuffer();
             List<WordTarget> highlighted = state.getResolver().getHighlighted();
             WordTarget locked = state.getResolver().getLockedTarget();
 
@@ -250,11 +252,22 @@ public class GamePanel extends JPanel {
                 drawEnemy(g2, enemy, typed, highlighted.contains(enemy), locked == enemy);
             }
 
+            // The boss is drawn behind Preah Ream and behind the bolts, so a
+            // monster four times anyone else's size cannot bury the hero or the
+            // venom the player is meant to be watching.
+            bossRenderer.draw(g2, state.getBoss(), sprites);
+
             drawPlayer(g2, state.getPlayer());
 
             for (Projectile projectile : state.getProjectiles()) {
-                drawProjectile(g2, projectile, typed,
-                        highlighted.contains(projectile), locked == projectile);
+                // During the finale the resolver is bypassed, so candidacy is
+                // read straight off the buffer rather than from its highlight
+                // list — otherwise a bolt the player is part-way through would
+                // draw as if untouched.
+                boolean lit = highlighted.contains(projectile)
+                        || (state.isBossActive() && !typed.isEmpty()
+                            && projectile.getWord().startsWith(typed));
+                drawProjectile(g2, projectile, typed, lit, locked == projectile);
             }
 
             // Boons are drawn after the monsters and the hero so a drop is never
@@ -272,7 +285,11 @@ public class GamePanel extends JPanel {
 
             drawBoonFlash(g2);
 
-            if (!state.isGameOver()) {
+            // The lock chip names the one target you are typing at. During the
+            // finale there is only ever one, and it is a whole sentence — the
+            // paragraph panel says it better and the chip would just repeat it
+            // badly.
+            if (!state.isGameOver() && !state.isBossActive()) {
                 drawLockChip(g2);
             }
 
@@ -829,13 +846,19 @@ public class GamePanel extends JPanel {
         double x = projectile.getX();
         double y = projectile.getY();
 
+        // Venom is purple and wordless, so it reads as "you cannot type this"
+        // before the player has time to look for a word that is not there.
+        boolean venom = projectile.getKind() == Projectile.Kind.VENOM;
+        Color edge = venom ? Palette.VENOM_EDGE : COLOR_BOLT_EDGE;
+        Color core = venom ? Palette.VENOM_CORE : COLOR_BOLT_CORE;
+
         float alpha = 1.0f;
-        double scale = 1.0;
+        double scale = venom ? 1.25 : 1.0;
         if (!projectile.isActive()) {
             double t = Math.min(1.0,
                     projectile.getDefeatTicks() / (double) GameConfig.DEFEAT_ANIMATION_TICKS);
             alpha = (float) Math.max(0, 1.0 - t);
-            scale = 1.0 + t * 1.4;
+            scale *= 1.0 + t * 1.4;
         }
 
         Graphics2D pg = (Graphics2D) g2.create();
@@ -847,7 +870,7 @@ public class GamePanel extends JPanel {
             // Trailing wisp so the bolt reads as moving, not hanging.
             pg.setComposite(AlphaComposite.getInstance(
                     AlphaComposite.SRC_OVER, alpha * 0.28f));
-            pg.setColor(COLOR_BOLT_EDGE);
+            pg.setColor(edge);
             double heading = projectile.getHeading();
             for (int i = 1; i <= 3; i++) {
                 double trail = radius * (1.0 - i * 0.22);
@@ -863,9 +886,9 @@ public class GamePanel extends JPanel {
                         x - radius - 8, y - radius - 8,
                         (radius + 8) * 2, (radius + 8) * 2));
             }
-            pg.setColor(COLOR_BOLT_EDGE);
+            pg.setColor(edge);
             pg.fill(new Ellipse2D.Double(x - radius, y - radius, radius * 2, radius * 2));
-            pg.setColor(COLOR_BOLT_CORE);
+            pg.setColor(core);
             pg.fill(new Ellipse2D.Double(
                     x - radius * 0.5, y - radius * 0.5, radius, radius));
 
@@ -875,6 +898,8 @@ public class GamePanel extends JPanel {
                         x - radius * 0.7, y - radius * 0.7, radius * 1.4, radius * 1.4));
             }
 
+            // Venom carries a word too, and it is the only way to deflect one,
+            // so it needs a plate exactly as much as a thrown bolt does.
             if (projectile.isActive()) {
                 drawWord(pg, projectile.getWord(), typed, isCandidate,
                         (int) Math.round(x), (int) Math.round(y - radius - 12), boltFont);
