@@ -61,30 +61,64 @@ public class BossRenderer {
     }
 
     /**
-     * Paints the whole fight.
+     * The boss and its chrome, drawn UNDERNEATH the rest of the play field.
+     *
+     * <p>Split from {@link #drawOverlay} because of a real bug: the summoned
+     * monsters of a MINIONS phase are ordinary enemies with ordinary word plates,
+     * and the boss is four times the size of anything else standing dead centre.
+     * With the boss painted after the enemies, a summon that walked in front of
+     * it had both its sprite and — far worse — its word buried, so the player
+     * was being asked to type something they could not read.
+     *
+     * <p>Everything here is background by definition: the monster, its bar, and
+     * whichever panel is up. None of it is typed. So all of it goes down before
+     * the things that are.
      *
      * @param sprites used for the boss's artwork; falls back to a drawn
      *                silhouette when the PNG is absent, as everywhere else
      */
-    public void draw(Graphics2D g2, BossFight boss, SpriteCache sprites) {
+    public void drawWorld(Graphics2D g2, BossFight boss, SpriteCache sprites) {
         if (boss == null) {
             return;
         }
         drawMonster(g2, boss, sprites);
 
+        if (boss.isArriving() || boss.isBeaten()) {
+            return;
+        }
+
+        // The paragraph is off screen for the whole of an attack phase. Leaving
+        // it up would ask the player to read a sentence they are not allowed to
+        // type, which reads as the input having broken; the banner in its place
+        // says what is happening and how much longer it lasts.
+        if (boss.isAttacking()) {
+            // The health bar is deliberately NOT drawn during a phase. It cannot
+            // move — the verse is what damages the boss and the verse is away —
+            // so it is a large, bright, centred thing reporting a number that is
+            // not changing, sitting exactly where the summons come in. The phase
+            // chip takes its slot instead, which keeps the top of the field to
+            // one element rather than two.
+            drawPhaseChip(g2, boss);
+        } else {
+            drawHealthBar(g2, boss);
+            drawParagraphPanel(g2, boss);
+        }
+    }
+
+    /**
+     * The parts that must sit above everything, drawn last.
+     *
+     * <p>Only the two held screens qualify: the arrival name card and the
+     * briefing. Both stop the fight while they are up, so nothing they cover is
+     * anything the player could be acting on.
+     */
+    public void drawOverlay(Graphics2D g2, BossFight boss) {
+        if (boss == null) {
+            return;
+        }
         if (boss.isArriving()) {
             drawArrival(g2, boss);
-            return;
-        }
-        if (boss.isBeaten()) {
-            return;
-        }
-        drawHealthBar(g2, boss);
-        drawParagraphPanel(g2, boss);
-
-        // Last, so it sits over the verse rather than under it — the whole
-        // point of the held beat is that this is the only thing being read.
-        if (boss.isBriefing()) {
+        } else if (boss.isBriefing()) {
             drawBriefing(g2, boss);
         }
     }
@@ -451,6 +485,75 @@ public class BossRenderer {
                 g2.draw(pip);
             }
         }
+    }
+
+    // ---- the attack phase --------------------------------------------------
+
+    /**
+     * What the boss is doing, and how much of it is left.
+     *
+     * <p>Occupies the verse panel's exact footprint. Anything else would make
+     * the whole lower half of the screen jump every few seconds, and the two
+     * states are meant to read as the same slot showing different things rather
+     * than as the layout rearranging itself.
+     *
+     * <p>Deliberately thin: a name and a draining bar. The player's attention
+     * during a phase belongs on the field, and a panel that competed for it
+     * would defeat the point of having taken the paragraph away.
+     */
+    /** Width of the phase chip. Narrow on purpose — see {@link #drawPhaseChip}. */
+    private static final int PHASE_CHIP_W = 300;
+
+    /**
+     * What the boss is doing, as a compact chip in the health bar's slot.
+     *
+     * <p>This used to be a full-width panel pinned above Preah Ream's head, and
+     * that was the worst possible place for it during a MINIONS phase: it is
+     * exactly where grounded summons converge, so the one panel that says "type
+     * them down" sat on top of the words the player had to type. Even drawn
+     * underneath it cost contrast behind every plate.
+     *
+     * <p>So it moves up into the slot the health bar has vacated, and shrinks to
+     * something nearer a label than a panel. Between the HUD bar and the hero
+     * there is now nothing of the boss's but the boss, which is the space the
+     * summons and their words need.
+     */
+    private void drawPhaseChip(Graphics2D g2, BossFight boss) {
+        if (boss.getAttackPhase() == null) {
+            return;
+        }
+        int x = GameConfig.TEMPLE_CENTER_X - PHASE_CHIP_W / 2;
+        int y = HUDRenderer.BAR_HEIGHT + 26;
+        int height = 34;
+
+        RoundRectangle2D chip =
+                new RoundRectangle2D.Double(x, y, PHASE_CHIP_W, height, 10, 10);
+        g2.setColor(Palette.BOSS_PANEL);
+        g2.fill(chip);
+        g2.setColor(Palette.alpha(Palette.DANGER, 0.75));
+        g2.setStroke(new BasicStroke(1.4f));
+        g2.draw(chip);
+
+        g2.setFont(labelFont);
+        FontMetrics fm = g2.getFontMetrics();
+        String name = boss.getAttackPhase().getDisplayName()
+                .toUpperCase(java.util.Locale.ROOT);
+        g2.setColor(Palette.HUD_TEXT_GOLD);
+        g2.drawString(name,
+                GameConfig.TEMPLE_CENTER_X - fm.stringWidth(name) / 2,
+                y + 15 + fm.getAscent() / 2 - 2);
+
+        // Drains left to right, so "nearly over" is legible at a glance without
+        // reading anything.
+        int trackWidth = PHASE_CHIP_W - 24;
+        int trackX = x + 12;
+        int trackY = y + height - 9;
+        double remaining = Math.max(0.0, 1.0 - boss.getAttackPhaseProgress());
+
+        g2.setColor(Palette.LIFE_LOST);
+        g2.fillRect(trackX, trackY, trackWidth, 4);
+        g2.setColor(Palette.DANGER);
+        g2.fillRect(trackX, trackY, (int) Math.round(trackWidth * remaining), 4);
     }
 
     // ---- the paragraph -----------------------------------------------------
