@@ -483,31 +483,35 @@ class BossFightTest {
     }
 
     @Test
-    @DisplayName("a bolt always lands inside the phase that threw it")
-    void venomOutlivesNothing() {
-        // The field is swept when a phase ends. A bolt slower than its own
-        // phase would be cleared away unanswered on every tier that stretches
-        // the flight, which teaches the player to ignore the barrage entirely.
+    @DisplayName("a bolt is answerable on every tier")
+    void venomIsAlwaysAnswerable() {
+        // Flight time used to be capped to the shortest phase, because a phase
+        // ended on a clock and a slow bolt could be swept away unanswered. A
+        // phase now waits for its own bolts, so the only remaining rule is that
+        // a bolt is never too fast to read.
         for (Difficulty tier : Difficulty.values()) {
             BossFight boss = new BossFight(EnemyType.KRONG_REAP, VERSES, tier);
-            assertTrue(boss.venomFlightTicks() < BossFight.PHASE_MIN_TICKS,
-                    tier + " throws bolts that outlive the shortest phase");
             assertTrue(boss.venomFlightTicks() >= GameConfig.TARGET_FPS * 2,
                     tier + " throws bolts too fast to read");
         }
     }
 
     @Test
-    @DisplayName("the attack gap is a random five to ten seconds")
+    @DisplayName("bolts are spaced closely enough to read as a barrage")
     void venomIntervalStaysInItsWindow() {
+        // Spacing, not a phase clock. A phase now launches a quota of three to
+        // eight, so the old five-to-ten-second gap would have meant half a
+        // minute of standing about between bolts.
         BossFight boss = fighting();
 
         for (int i = 0; i < 500; i++) {
             int gap = boss.venomIntervalTicks();
             assertTrue(gap >= GameConfig.VENOM_INTERVAL_MIN_TICKS
                             && gap <= GameConfig.VENOM_INTERVAL_MAX_TICKS,
-                    "gap of " + gap + " ticks is outside five to ten seconds");
+                    "gap of " + gap + " ticks is outside its window");
         }
+        assertTrue(GameConfig.VENOM_INTERVAL_MAX_TICKS <= GameConfig.TARGET_FPS * 4,
+                "spacing this wide turns a barrage back into a trickle");
     }
 
     @Test
@@ -607,9 +611,20 @@ class BossFightTest {
         return boss;
     }
 
+    /**
+     * Types a whole paragraph, which is what provokes an attack phase.
+     *
+     * <p>{@link #paragraphBoss()} runs two sentences to the paragraph, so this
+     * is two verses — a single verse leaves the boss still typing.
+     */
+    private static void typeParagraph(BossFight boss) {
+        typeVerse(boss);
+        typeVerse(boss);
+    }
+
     /** Ticks until the current attack phase has run out. */
     private static void waitOutThePhase(BossFight boss) {
-        for (int i = 0; i <= BossFight.PHASE_MAX_TICKS && boss.isAttacking(); i++) {
+        for (int i = 0; i <= BossFight.PHASE_STUCK_TICKS && boss.isAttacking(); i++) {
             boss.update();
         }
     }
@@ -628,20 +643,146 @@ class BossFightTest {
     }
 
     @Test
-    @DisplayName("a phase lasts seven to ten seconds")
-    void phasesRunSevenToTenSeconds() {
-        assertEquals(GameConfig.TARGET_FPS * 7, BossFight.PHASE_MIN_TICKS);
-        assertEquals(GameConfig.TARGET_FPS * 10, BossFight.PHASE_MAX_TICKS);
+    @DisplayName("the boss harasses the player mid-paragraph")
+    void venomFliesDuringTheVerse() {
+        // The paragraph used to be a safe window — nothing could happen during
+        // it, so nothing the player did in it mattered. A bolt drifting in is
+        // what gives the verse a cost.
+        BossFight boss = paragraphBoss();
+        assertTrue(boss.isTyping(), "should start on the paragraph");
+
+        boolean spat = false;
+        for (int i = 0; i < GameConfig.TARGET_FPS * 60 && !spat; i++) {
+            boss.update();
+            if (boss.isVenomDue()) {
+                spat = true;
+            }
+        }
+        assertTrue(spat, "the boss never interrupted the paragraph");
+        assertTrue(boss.isTyping(), "and it should not have started a phase to do it");
     }
 
     @Test
-    @DisplayName("the boss never attacks while a paragraph is up")
-    void noAttacksDuringTheTypingWindow() {
+    @DisplayName("harassment is a budget for the fight, not a rate")
+    void harassmentIsBounded() {
+        // A slow reader must not be punished twice. Taking longer over the
+        // paragraph should space the interruptions out, not multiply them.
+        BossFight boss = paragraphBoss();
+
+        int spits = 0;
+        for (int i = 0; i < GameConfig.TARGET_FPS * 600; i++) {
+            boss.update();
+            if (boss.isVenomDue()) {
+                spits++;
+            }
+        }
+        assertTrue(spits > 0, "ten minutes of typing and never a single bolt");
+        assertTrue(spits <= 12,
+                "ten minutes of typing drew " + spits + " bolts — that is a rate, "
+                        + "and it punishes a slow reader for being slow");
+    }
+
+    @Test
+    @DisplayName("a phase ends on its objective, not on a clock")
+    void phasesEndOnTheirObjective() {
+        // The whole point of the redesign. A phase sends a fixed number of
+        // attacks and then waits for the field to clear — so a player who deals
+        // with them quickly gets the paragraph back quickly, and one who does
+        // not is not rescued by a timer.
+        BossFight boss = paragraphBoss();
+        typeParagraph(boss);
+        assertTrue(boss.isAttacking(), "a finished paragraph should provoke a phase");
+
+        int scheduled = boss.objectiveRemaining();
+        assertTrue(scheduled >= 2, "a phase must actually ask for something");
+
+        // Nothing is reported live, so the phase ends once its quota is sent.
+        for (int i = 0; i < BossFight.PHASE_STUCK_TICKS && boss.isAttacking(); i++) {
+            boss.update();
+        }
+        assertFalse(boss.isAttacking(), "the phase never met its objective");
+    }
+
+    @Test
+    @DisplayName("a phase will not end while its attacks are still live")
+    void phaseWaitsForTheFieldToClear() {
+        // The field is what ends the phase. While something the boss sent is
+        // still on the plaza, the paragraph stays away however long it takes.
+        BossFight boss = paragraphBoss();
+        typeParagraph(boss);
+
+        for (int i = 0; i < GameConfig.TARGET_FPS * 30; i++) {
+            boss.reportField(1);
+            boss.update();
+        }
+        assertTrue(boss.isAttacking(),
+                "the phase ended while one of its own attacks was still alive");
+
+        // Clear the field and it should finish promptly.
+        for (int i = 0; i < GameConfig.TARGET_FPS * 5 && boss.isAttacking(); i++) {
+            boss.reportField(0);
+            boss.update();
+        }
+        assertFalse(boss.isAttacking(), "the phase did not end once the field cleared");
+    }
+
+    @Test
+    @DisplayName("the stuck guard is a bug guard, not a pacing timer")
+    void stuckGuardIsGenerous() {
+        // If this ever fires in play, something is broken. It has to be far
+        // longer than any honest phase so that it never becomes the thing that
+        // ends one.
+        assertTrue(BossFight.PHASE_STUCK_TICKS >= GameConfig.TARGET_FPS * 45,
+                "too tight to be a bug guard — it would start pacing the fight");
+    }
+
+    @Test
+    @DisplayName("a phase that jams is broken out of rather than hanging the run")
+    void stuckPhaseIsBrokenOut() {
+        // Simulates the failure the guard exists for: something the boss sent
+        // never resolves. Without the guard the run would hang here forever.
+        BossFight boss = paragraphBoss();
+        typeParagraph(boss);
+
+        for (int i = 0; i <= BossFight.PHASE_STUCK_TICKS + 2; i++) {
+            boss.reportField(1);
+            boss.update();
+        }
+        assertFalse(boss.isAttacking(), "a jammed phase hung the fight");
+    }
+
+    @Test
+    @DisplayName("each phase asks for more than the last")
+    void phasesEscalate() {
+        // Escalation used to live in the phase length. Length now belongs to
+        // the player, so the quota is where the fight gets harder.
+        BossFight boss = paragraphBoss();
+
+        typeParagraph(boss);
+        int first = boss.objectiveRemaining();
+        for (int i = 0; i < BossFight.PHASE_STUCK_TICKS && boss.isAttacking(); i++) {
+            boss.update();
+        }
+
+        typeParagraph(boss);
+        int second = boss.objectiveRemaining();
+
+        assertTrue(second > first,
+                "phase two asked for " + second + ", phase one asked for " + first);
+    }
+
+    @Test
+    @DisplayName("the boss never SUMMONS while a paragraph is up")
+    void noSummonsDuringTheTypingWindow() {
+        // Bolts may interrupt the paragraph — that is the harassment, and it is
+        // what stops the verse being a safe window. Summons may not: a monster
+        // walking in takes seconds to deal with and a paragraph the player
+        // cannot look away from, and the two together are unreadable. Monsters
+        // belong to a phase, where the verse is off screen.
         BossFight boss = paragraphBoss();
 
         for (int i = 0; i < 3000; i++) {
             boss.update();
-            assertFalse(boss.isVenomDue(), "spat at tick " + i + ", with the verse on screen");
             assertFalse(boss.isMinionDue(), "summoned at tick " + i + ", with the verse up");
         }
         assertTrue(boss.isTyping(), "and it should still be waiting on the player");
@@ -706,7 +847,7 @@ class BossFightTest {
         typeVerse(boss);
         typeVerse(boss);
 
-        for (int i = 0; i <= BossFight.PHASE_MAX_TICKS; i++) {
+        for (int i = 0; i <= BossFight.PHASE_STUCK_TICKS; i++) {
             boss.update();
             if (boss.isPhaseJustEnded()) {
                 boss.update();
@@ -743,10 +884,15 @@ class BossFightTest {
 
         for (int i = 0; i < 3000; i++) {
             boss.update();
-            if (boss.isVenomDue()) {
+            // Bolts have two sources now — a barrage, and the harassment that
+            // interrupts the paragraph — so the phase rule only binds while a
+            // phase is actually running. A bolt with no phase at all is the
+            // harassment doing its job.
+            if (boss.isVenomDue() && boss.isAttacking()) {
                 assertEquals(BossPhase.PROJECTILE, boss.getAttackPhase(),
                         "the boss spat during a phase that is not about spitting");
             }
+            // Summons have only ever had one source, and that rule is absolute.
             if (boss.isMinionDue()) {
                 assertEquals(BossPhase.MINIONS, boss.getAttackPhase(),
                         "the boss summoned outside its summoning phase");
@@ -767,7 +913,7 @@ class BossFightTest {
             assertTrue(boss.isAttacking());
 
             boolean attacked = false;
-            for (int i = 0; i <= BossFight.PHASE_MAX_TICKS && boss.isAttacking(); i++) {
+            for (int i = 0; i <= BossFight.PHASE_STUCK_TICKS && boss.isAttacking(); i++) {
                 boss.update();
                 attacked |= boss.isVenomDue() || boss.isMinionDue();
             }
@@ -782,7 +928,7 @@ class BossFightTest {
 
         assertTrue(boss.minionsPerPhase() >= 2, "a summon of one is not a phase");
         assertTrue(boss.minionIntervalTicks() * boss.minionsPerPhase()
-                        <= BossFight.PHASE_MAX_TICKS,
+                        <= BossFight.PHASE_STUCK_TICKS,
                 "the phase would end before it finished summoning");
     }
 
@@ -974,16 +1120,22 @@ class BossFightTest {
     }
 
     @Test
-    @DisplayName("venom carries a word of its own")
+    @DisplayName("venom carries an order, not a noun")
     void venomIsTypeable() {
+        // Venom used to draw six-and-seven letter nouns from the medium pool.
+        // It now draws imperatives — `repel`, `shield`, `sever` — because a bolt
+        // gives about five seconds in the middle of a loud fight, and the word
+        // has to read as an instruction at a glance rather than as vocabulary.
+        // Shorter per bolt is deliberate: the pressure comes from how many
+        // arrive, not from how hard each one is.
         GameState state = atTheFinale();
         Projectile venom = waitForVenom(state);
 
         assertNotNull(venom);
         assertTrue(venom.isVenom());
         assertFalse(venom.getWord().isBlank(), "venom must be answerable");
-        assertTrue(venom.getWord().length() >= 5,
-                "a middling word, not a two-letter freebie: " + venom.getWord());
+        assertTrue(state.getWordBank().getActionWords().contains(venom.getWord()),
+                "venom should be an action word, got: " + venom.getWord());
     }
 
     @Test
@@ -1135,13 +1287,17 @@ class BossFightTest {
                 guard < 40_000 && boss.getStage() == verse && boss.isFighting();
                 guard++) {
             // A phase may be running — the verse is off screen and nothing can
-            // be typed at it until the boss is finished. Ride it out rather
-            // than spinning against a closed window.
+            // be typed at it until the boss is finished. Deal with the phase
+            // rather than riding it out: it ends when its attacks are gone, and
+            // ignoring them means they breach and land until the run is over.
             if (!boss.isTyping()) {
+                answerTheField(state);
                 state.update();
                 continue;
             }
-            clearTheField(state);
+            // Bolts too, because harassment now interrupts the paragraph — a
+            // whole fight's worth of them landing unanswered is several lives.
+            answerTheField(state);
             String word = boss.currentWord();
             for (int i = 1; i <= word.length(); i++) {
                 state.handleInput(word.substring(0, i));
@@ -1150,10 +1306,33 @@ class BossFightTest {
         }
     }
 
-    /** Removes everything the boss has summoned, without typing at it. */
+    /**
+     * Removes everything the boss has summoned, without typing at it.
+     *
+     * <p>Summons ONLY. Callers waiting for a bolt to land rely on that: sweeping
+     * the monsters is what leaves a bolt as the one thing that can still reach
+     * the temple, so widening this to projectiles quietly disarms every test
+     * about venom landing.
+     */
     private static void clearTheField(GameState state) {
         for (Enemy enemy : List.copyOf(state.getEnemies())) {
             enemy.defeat();
+        }
+    }
+
+    /**
+     * Answers the bolts as well, for callers that have to survive a whole fight.
+     *
+     * <p>Separate from {@link #clearTheField} on purpose. A phase now ends only
+     * when its own attacks are gone, and the sole way they leave without being
+     * typed is by breaching or landing — each costing a life. A test that plays
+     * a fight to its end has to deal with both or it runs out of lives part-way
+     * through the paragraph, which is the design working rather than a bug.
+     */
+    private static void answerTheField(GameState state) {
+        clearTheField(state);
+        for (Projectile bolt : List.copyOf(state.getProjectiles())) {
+            bolt.intercept();
         }
     }
 

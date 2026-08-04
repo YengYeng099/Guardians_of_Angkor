@@ -290,6 +290,12 @@ public class GameState {
         if (boss == null) {
             return;
         }
+        // The census first, then the decision. BossFight knows what it
+        // scheduled; only this class owns the enemy and projectile lists, so
+        // the world is reported in and the boss decides whether its phase is
+        // done. Both calls sit here, in this order, so the dependency is
+        // visible rather than an ordering rule someone has to remember.
+        boss.reportField(countLiveBossAttacks());
         boss.update(timeScale);
 
         if (boss.isVenomDue()) {
@@ -304,6 +310,29 @@ public class GameState {
         if (boss.isFinished()) {
             declareVictory();
         }
+    }
+
+    /**
+     * What the boss's current phase put on the field and has not got back.
+     *
+     * <p>Counts ACTIVE entities only. A defeated summon stays in the list
+     * through its death fade and a deflected bolt through its dissolve, and
+     * counting those would hold every phase open for an extra second per kill —
+     * so the player would clear the field and watch nothing happen.
+     */
+    private int countLiveBossAttacks() {
+        int live = 0;
+        for (Enemy enemy : enemies) {
+            if (enemy.isActive()) {
+                live++;
+            }
+        }
+        for (Projectile projectile : projectiles) {
+            if (projectile.isActive() && projectile.getKind() == Projectile.Kind.VENOM) {
+                live++;
+            }
+        }
+        return live;
     }
 
     /**
@@ -422,6 +451,24 @@ public class GameState {
         for (Projectile projectile : projectiles) {
             taken.add(projectile.getWord());
         }
+        for (Enemy minion : enemies) {
+            taken.addAll(minion.getAllWords());
+        }
+
+        // Now that a bolt can arrive DURING the verse, an exact-match exclusion
+        // is not enough. A bolt whose word is a prefix of the verse word the
+        // player is on — or the other way round — makes the shared buffer
+        // genuinely undecidable: `sea` and `seal` cannot both be finished, and
+        // the player cannot tell which one their keystrokes are going to.
+        // Excluding the pair outright is cheaper than teaching the matcher to
+        // arbitrate something that has no right answer.
+        String onNow = boss.isTyping() ? boss.currentWord() : "";
+        for (String word : List.copyOf(wordBank.getActionWords())) {
+            if (!onNow.isEmpty()
+                    && (word.startsWith(onNow) || onNow.startsWith(word))) {
+                taken.add(word);
+            }
+        }
 
         projectiles.add(new Projectile(
                 wordBank.venomWord(taken),
@@ -518,12 +565,18 @@ public class GameState {
             // player was aiming at the verse or at a bolt. The empty valid
             // buffer is what tells the input field to clear itself.
             resolver.noteExternalInput(false);
+            resolver.noteExternalCandidates(List.of());
             boss.resetVerse();
             bossBuffer = "";
             return ResolveResult.typo("");
         }
 
         resolver.noteExternalInput(true);
+        // Publish what is lit. This path bypasses the resolver, so without
+        // this the renderer asks "is this target highlighted?" and is told no
+        // for the whole fight — which is why summoned monsters never turned
+        // gold as they were typed.
+        resolver.noteExternalCandidates(alive);
         boss.trackTyping(matchesVerse ? buffer : "");
         return ResolveResult.locked(alive.get(0), buffer);
     }
@@ -553,10 +606,12 @@ public class GameState {
 
         if (alive.isEmpty()) {
             resolver.noteExternalInput(false);
+            resolver.noteExternalCandidates(List.of());
             bossBuffer = "";
             return ResolveResult.typo("");
         }
         resolver.noteExternalInput(true);
+        resolver.noteExternalCandidates(alive);
         return ResolveResult.locked(alive.get(0), buffer);
     }
 
