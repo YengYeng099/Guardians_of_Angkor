@@ -155,7 +155,7 @@ HUD keeps three lotus buds and clips the gold to the left half of one
 to show a half; six small pips would be exact but would need counting.
 
 ## Enemy roster (see bestiary for word-length tiers)
-Beisach, Yeak, Ahp, Pret, Stec Kantoab, Naga, Krong Reap
+Beisach, Yeak, Ahp, Pret, Kmaoch, Naga, Krong Reap
 
 ## Main class
 `com.guardiansofangkor.Main` — set as `mainClass` in build.gradle.kts,
@@ -266,6 +266,31 @@ the plate lands ON the bar and a pixel of rounding decides readability.
 There are tests asserting every spawn clears HUD_BAR_HEIGHT and that no
 grounded enemy ever leaves the plaza.
 
+## Concurrent enemy cap
+Difficulty.getMaxConcurrentEnemies (Easy 4, Medium 6, Hard 8) limits how
+many enemies are ALIVE at once. WaveManager holds the queue when the
+plaza is full — the spawn cooldown does not tick, so clearing one enemy
+never owes the player a backlog of everything that would have spawned
+while they were busy.
+
+This is a READING limit, not a screen-space one. Every live enemy is a
+word to scan and choose between, and past about six the player stops
+reading and starts guessing — prefix matching turns ambiguous at the
+same time, so the target they hit stops being the target they meant.
+
+It fixes a real gap. enemyCount plateaus but spawnIntervalTicks keeps
+shrinking to its floor, so every level past the plateau turned "more
+enemies" into "all the enemies at once": Medium's last wave put sixteen
+monsters up in nine seconds, and Hard's final six levels were identical
+to each other. The cap converts that into a queue that refills as fast
+as the player clears it. Count ACTIVE enemies only — a defeated one
+lingers through its death fade and would block a slot for a second.
+
+DO NOT conflate the two ceilings. enemyCount's cap (40) is a runaway
+guard for Endless and sets a level's LENGTH; the concurrent cap sets its
+DENSITY. They were the same number (20) once and that is exactly what
+made the late game flat.
+
 ## Difficulty
 All level scaling lives in engine/DifficultyCurve. Every curve is
 monotonic AND capped — an uncapped curve eventually produces an
@@ -277,7 +302,7 @@ test asserting a Pret never outruns an Ahp at any level.
 ## Ground behaviour
 EnemyType carries a GroundBehavior. GROUNDED (Beisach, Yeak, Pret, Naga,
 Krong Reap) anchors the BOTTOM of the trimmed sprite to GROUND_LINE_Y and
-never bobs — feet stay planted. FLOATING (Ahp, Stec Kantoab) anchors the
+never bobs — feet stay planted. FLOATING (Ahp, Kmaoch) anchors the
 sprite CENTRE at GROUND_LINE_Y minus hoverHeight and bobs on a sine wave.
 Never add bobbing to a grounded type; it looks like the ground is moving.
 
@@ -760,7 +785,21 @@ as words_en.json.
 ## Art still outstanding
 Everything below draws a placeholder and needs no code change when the
 PNG lands in src/main/resources/images:
-beisach_transparent.png, pret_transparent.png,
-stec_kantoab_transparent.png, and the five power-up icons
+pret_transparent.png, and the five power-up icons
 (powerup_time_freeze.png, powerup_slow_tide.png, powerup_purge.png,
 powerup_mend.png, powerup_naga_shield.png).
+
+Six of the seven monsters now have real art. EnemyType names the file
+directly (Beisach.png, Kmaoch.png, Naga.png alongside the older
+*_transparent.png ones), so the filename convention is not enforced —
+only that EnemyType and the file agree.
+
+SPRITES MUST BE RGBA WITH A TRANSPARENT BACKGROUND, not a cut-out saved
+on white. Beisach.png and Kmaoch.png arrived as RGB with no alpha, and
+the failure is quiet and confusing: SpriteCache.trim finds no
+transparent margin, keeps the whole square canvas, and the aspect ratio
+it derives is then 1:1 — so the monster draws squashed, inside an opaque
+white box, floating above the plaza because the canvas bottom rather
+than its feet is anchored to the ground line. Nothing throws. If a new
+sprite looks like that, check the alpha channel before reading any
+code.
